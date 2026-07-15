@@ -175,7 +175,7 @@ def forecast_ar1(context: np.ndarray, h: int, cfg: dict) -> dict:
     X = np.column_stack([np.ones_like(x), x])
     beta = np.linalg.lstsq(X, y, rcond=None)[0]
     c, phi = beta
-    sigma = np.std(y - X @ beta, ddof=2)      # 2 mean params
+    sigma = np.std(y - X @ beta, ddof=2)
     rng = np.random.default_rng(cfg["seed"])
     paths = np.empty((cfg["num_samples"], h))
     last = np.full(cfg["num_samples"], z[-1])
@@ -299,8 +299,6 @@ class OriginResult:
     y_h: float               # realized value at t+h
     yhat_h: float            # median point forecast at t+h (MAE/MASE)
     yhat_mean_h: float       # mean point forecast at t+h (RMSE/RMSSE)
-    scale: float             # in-context one-step naive MAE (MASE denominator)
-    scale_rmse: float        # in-context one-step naive RMSE (RMSSE denominator)
     q_lo: float = np.nan
     q_hi: float = np.nan
     wql_h: float = np.nan    # weighted quantile loss at step h
@@ -445,11 +443,7 @@ def run_backtest(cfg: dict) -> tuple[pd.DataFrame, dict]:
         p = pos[origin]
         context = values[p - C + 1: p + 1] # includes the origin observation; nothing after it
         y_future = values[p + 1: p + 1 + h] # used ONLY for scoring
-        # in-context 1-step naive MAE / RMSE (MASE / RMSSE denominators),
-        scale = np.mean(np.abs(np.diff(context)))
-        scale_rmse = np.sqrt(np.mean(np.diff(context) ** 2))
         regime = assign_regime(origin, cfg["regimes"])
-
         # to trace when a rescaling or seeding fit was required
         arch_fit.set_fit_context(f"origin {origin.date()}")
 
@@ -489,7 +483,6 @@ def run_backtest(cfg: dict) -> tuple[pd.DataFrame, dict]:
                 origin=origin, model=name,
                 y_origin=context[-1], y_h=y_future[-1], yhat_h=out["point"][-1],
                 yhat_mean_h=point_mean[-1],
-                scale=scale, scale_rmse=scale_rmse,
                 regime=regime,
             )
             if out["q"] is not None:
@@ -548,9 +541,7 @@ def evaluate(df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
         df["pred_mean"] = df["yhat_mean_h"]
         df["q_lo_t"], df["q_hi_t"] = df["q_lo"], df["q_hi"]
     df["abs_err"] = (df["pred"] - df["actual"]).abs()
-    df["scaled_err"] = df["abs_err"] / df["scale"]
     df["sq_err"] = (df["pred_mean"] - df["actual"]) ** 2
-    df["scaled_sq_err"] = df["sq_err"] / df["scale_rmse"] ** 2
     df["covered"] = ((df["actual"] >= df["q_lo_t"]) & (df["actual"] <= df["q_hi_t"])).where(
         df["q_lo"].notna())
     # direction of the h-step CHANGE (economically the relevant sign in both modes)
@@ -573,8 +564,6 @@ def evaluate(df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
                 RMSE=np.sqrt(g["sq_err"].mean()),
                 rel_MAE=g["abs_err"].mean() / nb["abs_err"].mean(),
                 rel_RMSE=np.sqrt(g["sq_err"].mean() / nb["sq_err"].mean()),
-                MASE=g["scaled_err"].mean(),
-                RMSSE=np.sqrt(g["scaled_sq_err"].mean()),
                 WQL=(g["wql_h"].mean() / mean_abs_y) if g["wql_h"].notna().any() else np.nan,
                 coverage90=g["covered"].mean() if g["covered"].notna().any() else np.nan,
                 dir_acc=(g["dir_actual"] == g["dir_pred"]).mean(),
